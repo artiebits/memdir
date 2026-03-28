@@ -1,0 +1,20 @@
+{
+  "name": "memdir",
+  "version": "0.0.1",
+  "description": "File-based memory for AI agents.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": ["index.js", "index.d.ts"],
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/artiebits/memdir.git"
+  },
+  "license": "ISC",
+  "type": "module",
+  "keywords": [
+    "agent-memory",
+    "ai-memory",
+    "semantic-search",
+    "llm"
+  ]
+}
