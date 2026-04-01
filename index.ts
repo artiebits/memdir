@@ -1,27 +1,35 @@
-/**
- * memdir — agent memory management
- *
- * Directory layout:
- *   memory/
- *     memory.md          — long-term facts (human-readable markdown bullets)
- *     YYYY-MM-DD.jsonl   — daily conversation logs (one JSON entry per line)
- *
- * Usage:
- *   const memory = new Memory()
- *   const { systemContent, tools } = await memory.init(agentPrompt, async (text) => await embed(text))
- *
- *   messages = await memory.afterTurn(messages)
- *
- * @typedef {(text: string) => Promise<number[]>} EmbedFn
- * @typedef {(texts: string[]) => Promise<number[][]>} BatchEmbedFn
- * @typedef {{ role: string, content: string }} Message
- * @typedef {{ id: string, text: string, date?: string, source: 'log'|'memory', embedding?: number[] }} IndexEntry
- * @typedef {{ systemContent: string, tools: object[] }} InitResult
- */
-
 import fs from "fs"
 import path from "path"
 import { createHash } from "crypto"
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+type EmbedFn = (text: string) => Promise<number[]>
+type BatchEmbedFn = (texts: string[]) => Promise<number[][]>
+
+export type Message = { role: string; content: string }
+
+type LogEntry = { ts: string; user: string; assistant: string }
+
+type IndexEntry = {
+  id: string
+  text: string
+  date?: string
+  source: "log" | "memory"
+  embedding?: number[]
+}
+
+export type InitResult = { memoryPrompt: string; tools: object[] }
+
+export type FlushOptions = {
+  charThreshold?: number
+  maxHistory?: number
+  basePrompt?: string
+}
+
+export type MemoryOptions = { dir?: string }
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,10 +46,9 @@ const LOG_LOOKBACK_DAYS = 30
 class WriteQueue {
   #tail = Promise.resolve()
 
-  /** @param {() => Promise<void>} fn */
-  run(fn) {
+  run(fn: () => Promise<void>): Promise<void> {
     const op = this.#tail.then(fn)
-    this.#tail = op.catch((err) => {
+    this.#tail = op.catch((err: Error) => {
       console.error("[WriteQueue]", err.message)
     })
     return op
@@ -52,15 +59,10 @@ class WriteQueue {
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-/** @param {string} text @returns {string} */
-const sha256 = (text) => createHash("sha256").update(text).digest("hex")
+const sha256 = (text: string): string =>
+  createHash("sha256").update(text).digest("hex")
 
-/**
- * @param {number[]} a
- * @param {number[]} b
- * @returns {number}
- */
-function cosineSim(a, b) {
+function cosineSim(a: number[], b: number[]): number {
   let dot = 0,
     ma = 0,
     mb = 0
@@ -75,44 +77,35 @@ function cosineSim(a, b) {
 /**
  * Atomic write: write to .tmp then rename into place.
  * Falls back gracefully on Windows cross-device rename (EXDEV).
- * @param {string} filePath
- * @param {string} content
  */
-async function atomicWrite(filePath, content) {
+async function atomicWrite(filePath: string, content: string): Promise<void> {
   const tmp = `${filePath}.tmp`
   await fs.promises.writeFile(tmp, content, "utf-8")
   try {
     await fs.promises.rename(tmp, filePath)
   } catch (err) {
-    if (err.code !== "EXDEV") throw err
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err
     await fs.promises.writeFile(filePath, content, "utf-8")
     await fs.promises.unlink(tmp).catch(() => {})
   }
 }
 
-/** @param {string} filePath @returns {Promise<string>} */
-async function readSafe(filePath) {
+async function readSafe(filePath: string): Promise<string> {
   try {
     return await fs.promises.readFile(filePath, "utf-8")
   } catch (err) {
-    if (err.code === "ENOENT") return ""
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return ""
     throw err
   }
 }
 
-/**
- * Parse a JSONL string, skipping malformed lines with a warning.
- * @template T
- * @param {string} text
- * @returns {T[]}
- */
-function parseJsonl(text) {
+function parseJsonl<T>(text: string): T[] {
   return text
     .split("\n")
     .filter(Boolean)
     .flatMap((line) => {
       try {
-        return [JSON.parse(line)]
+        return [JSON.parse(line) as T]
       } catch {
         console.warn("[memory] skipping malformed line:", line.slice(0, 80))
         return []
@@ -120,27 +113,25 @@ function parseJsonl(text) {
     })
 }
 
-/** @param {number} offsetDays @returns {string} YYYY-MM-DD */
-function dateStr(offsetDays = 0) {
+function dateStr(offsetDays = 0): string {
   const d = new Date()
   d.setDate(d.getDate() + offsetDays)
   return d.toISOString().slice(0, 10)
 }
 
-/** @param {unknown} embedding @returns {number[]} */
-function assertEmbedding(embedding) {
+function assertEmbedding(embedding: unknown): number[] {
   if (!Array.isArray(embedding)) {
     throw new Error("embedding function must return a number[]")
   }
-  return embedding
+  return embedding as number[]
 }
 
-/** @param {EmbedFn} embed @returns {BatchEmbedFn} */
-function resolveEmbed(embed) {
+function resolveEmbed(embed: EmbedFn): BatchEmbedFn {
   if (typeof embed !== "function") {
     throw new TypeError("init() requires an embedFn: async (text) => number[]")
   }
-  return async (texts) => Promise.all(texts.map(async (text) => assertEmbedding(await embed(text))))
+  return async (texts) =>
+    Promise.all(texts.map(async (text) => assertEmbedding(await embed(text))))
 }
 
 // ---------------------------------------------------------------------------
@@ -148,19 +139,16 @@ function resolveEmbed(embed) {
 // ---------------------------------------------------------------------------
 
 export class Memory {
-  #dir
-  #memoryFile // <dir>/memory.md
+  readonly #dir: string
+  readonly #memoryFile: string
 
-  /** @type {BatchEmbedFn|null} */
-  #embed = null
-  /** @type {IndexEntry[]} */
-  #index = []
+  #embed: BatchEmbedFn | null = null
+  #index: IndexEntry[] = []
 
   #queue = new WriteQueue()
   #indexQueue = new WriteQueue()
 
-  /** @param {{ dir?: string }} opts */
-  constructor({ dir = "./memory" } = {}) {
+  constructor({ dir = "./memory" }: MemoryOptions = {}) {
     this.#dir = path.resolve(dir)
     this.#memoryFile = path.join(this.#dir, "memory.md")
   }
@@ -169,13 +157,7 @@ export class Memory {
   // Public API
   // -------------------------------------------------------------------------
 
-  /**
-   * Initialise the manager. Must be called once before anything else.
-   *
-   * @param {EmbedFn} embedFn
-   * @returns {Promise<{ memoryPrompt: string, tools: object[] }>}
-   */
-  async init(embedFn) {
+  async init(embedFn: EmbedFn): Promise<InitResult> {
     this.#embed = resolveEmbed(embedFn)
 
     await fs.promises.mkdir(this.#dir, { recursive: true })
@@ -188,38 +170,28 @@ export class Memory {
     }
   }
 
-  /**
-   * Append one exchange to today's JSONL log.
-   * Write is serialised through the queue, then the in-memory index is updated.
-   * Throws on write or indexing failure — callers should handle.
-   *
-   * @param {string} userContent
-   * @param {string} assistantContent
-   */
-  async appendLog(userContent, assistantContent) {
-    this.#assertReady()
+  async appendLog(
+    userContent: string,
+    assistantContent: string,
+  ): Promise<void> {
+    this.#embedder // guard
 
-    const entry = {
+    const entry: LogEntry = {
       ts: new Date().toISOString(),
       user: userContent,
       assistant: assistantContent,
     }
     const file = path.join(this.#dir, `${dateStr()}.jsonl`)
 
-    await this.#queue.run(() => fs.promises.appendFile(file, JSON.stringify(entry) + "\n", "utf-8"))
+    await this.#queue.run(() =>
+      fs.promises.appendFile(file, JSON.stringify(entry) + "\n", "utf-8"),
+    )
 
     await this.#indexText(this.#logEntryToText(entry), "log", dateStr())
   }
 
-  /**
-   * Convenience helper for completed turns. Logs the latest user/assistant pair
-   * already present in messages, then flushes if needed.
-   *
-   * @param {Message[]} messages
-   * @returns {Promise<Message[]>}
-   */
-  async afterTurn(messages) {
-    this.#assertReady()
+  async afterTurn(messages: Message[]): Promise<Message[]> {
+    this.#embedder // guard
 
     const exchange = this.#latestExchange(messages)
     if (exchange) {
@@ -229,15 +201,19 @@ export class Memory {
     return (await this.maybeFlush(messages)) ?? messages
   }
 
-  /**
-   * Rebuild the in-memory index from memory.md and recent log files.
-   */
-  async reindex() {
-    this.#assertReady()
+  async reindex(): Promise<void> {
+    this.#embedder // guard
 
-    const [logChunks, memoryChunks] = await Promise.all([this.#collectLogChunks(), this.#collectMemoryChunks()])
+    const [logChunks, memoryChunks] = await Promise.all([
+      this.#collectLogChunks(),
+      this.#collectMemoryChunks(),
+    ])
 
-    const unique = [...new Map([...memoryChunks, ...logChunks].map((entry) => [entry.id, entry])).values()]
+    const unique = [
+      ...new Map(
+        [...memoryChunks, ...logChunks].map((entry) => [entry.id, entry]),
+      ).values(),
+    ]
 
     await this.#indexQueue.run(async () => {
       if (unique.length === 0) {
@@ -245,7 +221,7 @@ export class Memory {
         return
       }
 
-      const embeddings = await this.#embed(unique.map((entry) => entry.text))
+      const embeddings = await this.#embedder(unique.map((entry) => entry.text))
       this.#index = unique.map((entry, i) => ({
         ...entry,
         embedding: embeddings[i],
@@ -253,28 +229,29 @@ export class Memory {
     })
   }
 
-  /**
-   * Trim the conversation if it has grown past the char threshold, refreshing
-   * the system message with the latest memory.
-   *
-   * Returns a new array when trimmed, null when no action was needed.
-   * Usage: messages = await mm.maybeFlush(messages, { basePrompt }) ?? messages
-   *
-   * @param {Message[]} messages
-   * @param {{ charThreshold?: number, maxHistory?: number, basePrompt?: string }} opts
-   * @returns {Promise<Message[] | null>}
-   */
-  async maybeFlush(messages, { charThreshold = FLUSH_CHAR_THRESHOLD, maxHistory = FLUSH_MAX_HISTORY, basePrompt = '' } = {}) {
-    this.#assertReady()
+  async maybeFlush(
+    messages: Message[],
+    {
+      charThreshold = FLUSH_CHAR_THRESHOLD,
+      maxHistory = FLUSH_MAX_HISTORY,
+      basePrompt = "",
+    }: FlushOptions = {},
+  ): Promise<Message[] | null> {
+    this.#embedder // guard
 
     if (messages.length === 0) return null
 
-    const totalChars = messages.reduce((n, m) => n + (m.content?.length ?? 0), 0)
+    const totalChars = messages.reduce(
+      (n, m) => n + (m.content?.length ?? 0),
+      0,
+    )
     if (totalChars < charThreshold) return null
 
     const memory = await this.#readMemory()
     const memoryPrompt = this.#buildSystemContent(memory)
-    const systemContent = [basePrompt, memoryPrompt].filter(Boolean).join('\n\n')
+    const systemContent = [basePrompt, memoryPrompt]
+      .filter(Boolean)
+      .join("\n\n")
     const system = { ...messages[0], content: systemContent }
     const rest = messages.slice(1)
     const tail = maxHistory > 1 ? rest.slice(-(maxHistory - 1)) : []
@@ -283,25 +260,34 @@ export class Memory {
   }
 
   // -------------------------------------------------------------------------
+  // Private: embedder guard
+  // -------------------------------------------------------------------------
+
+  get #embedder(): BatchEmbedFn {
+    if (!this.#embed) {
+      throw new Error("Memory not initialised — call init() first")
+    }
+    return this.#embed
+  }
+
+  // -------------------------------------------------------------------------
   // Private: memory.md
   // -------------------------------------------------------------------------
 
-  /** @returns {Promise<string>} */
-  #readMemory() {
+  #readMemory(): Promise<string> {
     return readSafe(this.#memoryFile)
   }
 
-  /**
-   * Append a markdown bullet to memory.md and index it.
-   * Read-modify-write is safe because all writes go through the queue.
-   * @param {string} content
-   */
-  async #writeMemory(content) {
-    const bullet = content.trim().startsWith("-") ? content.trim() : `- ${content.trim()}`
+  async #writeMemory(content: string): Promise<void> {
+    const bullet = content.trim().startsWith("-")
+      ? content.trim()
+      : `- ${content.trim()}`
 
     await this.#queue.run(async () => {
       const existing = await this.#readMemory()
-      const updated = existing ? `${existing.trimEnd()}\n${bullet}\n` : `${bullet}\n`
+      const updated = existing
+        ? `${existing.trimEnd()}\n${bullet}\n`
+        : `${bullet}\n`
       await atomicWrite(this.#memoryFile, updated)
     })
 
@@ -312,14 +298,14 @@ export class Memory {
   // Private: log helpers
   // -------------------------------------------------------------------------
 
-  /** @param {{ ts: string, user: string, assistant: string }} entry @returns {string} */
-  #logEntryToText({ ts, user, assistant }) {
+  #logEntryToText({ ts, user, assistant }: LogEntry): string {
     return `[${ts}] user: ${user}\n[${ts}] assistant: ${assistant}`
   }
 
-  /** @param {Message[]} messages @returns {{ user: string, assistant: string } | null} */
-  #latestExchange(messages) {
-    let assistant = null
+  #latestExchange(
+    messages: Message[],
+  ): { user: string; assistant: string } | null {
+    let assistant: string | null = null
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const message = messages[i]
@@ -347,13 +333,14 @@ export class Memory {
     return null
   }
 
-  /** @returns {Promise<Array<{ text: string, id: string, date: string, source: 'log' }>>} */
-  async #collectLogChunks() {
-    let files
+  async #collectLogChunks(): Promise<
+    Array<{ text: string; id: string; date: string; source: "log" }>
+  > {
+    let files: string[]
     try {
       files = await fs.promises.readdir(this.#dir)
     } catch (err) {
-      if (err.code === "ENOENT") return []
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return []
       throw err
     }
 
@@ -364,24 +351,32 @@ export class Memory {
         .map(async (file) => {
           const date = file.replace(".jsonl", "")
           const content = await readSafe(path.join(this.#dir, file))
-          return parseJsonl(content).flatMap((entry) => {
-            if (
-              typeof entry?.ts !== "string" ||
-              typeof entry?.user !== "string" ||
-              typeof entry?.assistant !== "string"
-            ) {
-              return []
-            }
-            const text = this.#logEntryToText(entry)
-            return [{ text, id: sha256(text), date, source: /** @type {'log'} */ ("log") }]
-          })
+          return parseJsonl<Record<string, unknown>>(content).flatMap(
+            (entry) => {
+              if (
+                typeof entry?.ts !== "string" ||
+                typeof entry?.user !== "string" ||
+                typeof entry?.assistant !== "string"
+              ) {
+                return []
+              }
+              const logEntry: LogEntry = {
+                ts: entry.ts,
+                user: entry.user,
+                assistant: entry.assistant,
+              }
+              const text = this.#logEntryToText(logEntry)
+              return [{ text, id: sha256(text), date, source: "log" as const }]
+            },
+          )
         }),
     )
     return chunks.flat()
   }
 
-  /** @returns {Promise<Array<{ text: string, id: string, source: 'memory' }>>} */
-  async #collectMemoryChunks() {
+  async #collectMemoryChunks(): Promise<
+    Array<{ text: string; id: string; source: "memory" }>
+  > {
     const content = await this.#readMemory()
     return content
       .split("\n")
@@ -389,22 +384,20 @@ export class Memory {
       .map((bullet) => ({
         text: bullet.trim(),
         id: sha256(bullet.trim()),
-        source: /** @type {'memory'} */ ("memory"),
+        source: "memory" as const,
       }))
   }
 
-  /**
-   * Embed a single text and add it to the in-memory index if not already present.
-   * @param {string} text
-   * @param {'log'|'memory'} source
-   * @param {string=} date
-   */
-  async #indexText(text, source, date) {
+  async #indexText(
+    text: string,
+    source: "log" | "memory",
+    date?: string,
+  ): Promise<void> {
     await this.#indexQueue.run(async () => {
       const id = sha256(text)
       if (this.#index.some((entry) => entry.id === id)) return
 
-      const [embedding] = await this.#embed([text])
+      const [embedding] = await this.#embedder([text])
       this.#index = [...this.#index, { id, text, date, source, embedding }]
     })
   }
@@ -413,8 +406,7 @@ export class Memory {
   // Private: system prompt
   // -------------------------------------------------------------------------
 
-  /** @param {string} memory @returns {string} */
-  #buildSystemContent(memory) {
+  #buildSystemContent(memory: string): string {
     const memorySection = memory
       ? `## Profile Memory\n\n${memory}\n\nProfile memory contains only stable facts across conversations. Do not surface it unless directly relevant to the current reply.`
       : null
@@ -455,8 +447,7 @@ export class Memory {
   // Private: tools
   // -------------------------------------------------------------------------
 
-  /** @returns {object[]} */
-  #buildTools() {
+  #buildTools(): object[] {
     return [
       {
         name: "memory_write",
@@ -466,12 +457,13 @@ export class Memory {
           properties: {
             content: {
               type: "string",
-              description: "A single concise sentence. State only what was explicitly said — no inference, no editorializing. For behavioral guidance, add the reason after a dash: \"Prefers concise responses — finds long explanations condescending.\"",
+              description:
+                'A single concise sentence. State only what was explicitly said — no inference, no editorializing. For behavioral guidance, add the reason after a dash: "Prefers concise responses — finds long explanations condescending."',
             },
           },
           required: ["content"],
         },
-        function: async ({ content }) => {
+        function: async ({ content }: { content: string }) => {
           await this.#writeMemory(content)
           return "Memory saved."
         },
@@ -489,7 +481,8 @@ export class Memory {
           properties: {
             query: {
               type: "string",
-              description: "Natural language description of what you want to recall.",
+              description:
+                "Natural language description of what you want to recall.",
             },
             k: {
               type: "number",
@@ -498,35 +491,32 @@ export class Memory {
           },
           required: ["query"],
         },
-        function: async ({ query, k = 5 }) => {
+        function: async ({ query, k = 5 }: { query: string; k?: number }) => {
           if (this.#index.length === 0) return "No history indexed yet."
 
-          const [queryEmbedding] = await this.#embed([query])
+          const [queryEmbedding] = await this.#embedder([query])
           const safeK = Math.min(Math.max(1, k), 20)
 
           const results = this.#index
             .filter((e) => e.embedding?.length)
-            .map((e) => ({ ...e, score: cosineSim(queryEmbedding, e.embedding) }))
+            .map((e) => ({
+              ...e,
+              score: cosineSim(queryEmbedding, e.embedding!),
+            }))
             .sort((a, b) => b.score - a.score)
             .slice(0, safeK)
 
           if (results.length === 0) return "No relevant history found."
 
           return results
-            .map((e) => (e.date ? `[${e.source} / ${e.date}]\n${e.text}` : `[${e.source}]\n${e.text}`))
+            .map((e) =>
+              e.date
+                ? `[${e.source} / ${e.date}]\n${e.text}`
+                : `[${e.source}]\n${e.text}`,
+            )
             .join("\n\n---\n\n")
         },
       },
     ]
-  }
-
-  // -------------------------------------------------------------------------
-  // Private: guard
-  // -------------------------------------------------------------------------
-
-  #assertReady() {
-    if (!this.#embed) {
-      throw new Error("Memory not initialised — call init() first")
-    }
   }
 }

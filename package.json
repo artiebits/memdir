@@ -1,10 +1,16 @@
 {
   "name": "memdir",
   "version": "0.0.1",
-  "description": "File-based memory for AI agents.",
-  "main": "index.js",
-  "types": "index.d.ts",
-  "files": ["index.js", "index.d.ts"],
+  "description": "Lightweight memory manager for AI agents.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "prepublishOnly": "npm run build",
+    "build": "tsc"
+  },
   "repository": {
     "type": "git",
     "url": "git+ssh://git@github.com/artiebits/memdir.git"
@@ -16,5 +22,9 @@
     "ai-memory",
     "semantic-search",
     "llm"
-  ]
+  ],
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2"
+  }
 }
