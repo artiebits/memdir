@@ -1,14 +1,16 @@
 # memdir
 
-Lightweight memory manager for AI agents.
+Memory manager for AI agents.
 
-Core ideas:
-- Local-first — no network calls, no external services, private by design
-- File-based — memory is inspectable and editable
-- Embedding-based — semantic search without a vector DB
-- Plug-and-play — works with Ollama, llama.cpp, or any local LLM provider
+- No data leaves your machine
+- Works with any LLM
+- Stores memory in human-readable, editable files
 
-Perfect if you’re developing small-medium agents that need to remember things across sessions without relying on vector DBs or paid services.
+**Who would use this?**
+
+- Those who want fast setup without API keys or paid subscriptions
+- Those who prioritize privacy and offline-first AI agents
+- Those who want to open a .md file and see exactly what the agent "knows"
 
 ## Installation
 
@@ -43,31 +45,7 @@ const systemPrompt = `You are a helpful agent. ${memoryPrompt}`
 let messages = [{ role: "system", content: systemPrompt }]
 ```
 
-node-llama-cpp example:
-
-```ts
-import { Memory } from "memdir"
-import { getLlama } from "node-llama-cpp"
-
-const memory = new Memory()
-
-const llama = await getLlama()
-const model = await llama.loadModel({ modelPath: "./models/bge-small-en-v1.5-q8_0.gguf" })
-const context = await model.createEmbeddingContext()
-
-async function embed(text) {
-  const embedding = await context.getEmbeddingFor(text)
-  return embedding.vector
-}
-const { memoryPrompt, tools } = await memory.init(embed)
-
-// Assemble the system prompt
-const systemPrompt = `You are a helpful agent. ${memoryPrompt}`
-
-let messages = [{ role: "system", content: systemPrompt }]
-```
-
-`init()` returns two things to wire into your agent:
+`init()` returns two things:
 
 - `memoryPrompt` — memory instructions and stored facts. Append to your own system prompt.
 - `tools` — `memory_write` and `memory_search` tools. Pass these to your model.
