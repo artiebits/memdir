@@ -1,16 +1,16 @@
 # memdir
 
-Memory manager for AI agents.
+Memory for your local agent.
 
-- No data leaves your machine
 - Works with any LLM
+- No data leaves your machine
 - Stores memory in human-readable, editable files
 
 **Who would use this?**
 
-- Those who want fast setup without API keys or paid subscriptions
-- Those who prioritize privacy and offline-first AI agents
-- Those who want to open a .md file and see exactly what the agent "knows"
+- Those who want fast setup
+- Those who prioritize privacy
+- Those who want to open memory file and see exactly what the agent "knows"
 
 ## Installation
 
@@ -18,24 +18,36 @@ Memory manager for AI agents.
 npm i memdir
 ```
 
+## Compatibility
+
+Works with any tool-calling LLM:
+
+- Local runtimes: Ollama, llama.cpp, LM Studio, and more
+- Cloud providers: OpenAI (GPT), Anthropic (Claude), Mistral, xAI (Grok)
+- Open models: Llama, Qwen, DeepSeek, Mixtral, Gemma, and more
+
+Memory stays local even when using a cloud API.
+
+Note: The model must support tool calling. Base models without instruction tuning won't know when or how to call the memory tools.
+
 ## Usage
 
 ```ts
-import { Memory } from "memdir"
+import { Memory } from "memdir";
 
-const memory = new Memory()
-const { memoryPrompt, tools: memoryTools } = await memory.init()
+const memory = new Memory();
+const { memoryPrompt, tools: memoryTools } = await memory.init();
 
 const agent = new Agent({
   instructions: `You are a helpful assistant.\n\n${memoryPrompt}`,
   tools: [...yourTools, ...memoryTools],
-})
+});
 ```
 
 After each turn:
 
 ```ts
-messages = await memory.afterTurn(messages)
+messages = await memory.afterTurn(messages);
 ```
 
 ## API
