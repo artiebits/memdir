@@ -20,37 +20,19 @@ npm i memdir
 
 ## Usage
 
-Ollama example:
-
 ```ts
 import { Memory } from "memdir"
-import { Ollama } from "ollama"
 
 const memory = new Memory()
-const ollama = new Ollama()
+const { memoryPrompt, tools: memoryTools } = await memory.init()
 
-async function embed(prompt) {
-  const { embedding } = await ollama.embeddings({
-    model: "nomic-embed-text",
-    prompt,
-  })
-  return embedding
-}
-
-const { memoryPrompt, tools } = await memory.init(embed)
-
-// Assemble the system prompt
-const systemPrompt = `You are a helpful agent. ${memoryPrompt}`
-
-let messages = [{ role: "system", content: systemPrompt }]
+const agent = new Agent({
+  instructions: `You are a helpful assistant.\n\n${memoryPrompt}`,
+  tools: [...yourTools, ...memoryTools],
+})
 ```
 
-`init()` returns two things:
-
-- `memoryPrompt` — memory instructions and stored facts. Append to your own system prompt.
-- `tools` — `memory_write`, `memory_search`, and `memory_delete` tools. Pass these to your model.
-
-Then after each turn do:
+After each turn:
 
 ```ts
 messages = await memory.afterTurn(messages)
@@ -62,23 +44,9 @@ messages = await memory.afterTurn(messages)
 
 Creates a new Memory instance. Accepts an optional `dir` option (default: `'./memory'`) telling where all files should be stored.
 
-### `await memory.init(embedding)`
+### `await memory.init()`
 
-Initializes the memory manager and builds semantic index. Must be called once before anything else.
-
-- `embedding` — `async (text) => number[]`
-
-The embedding function must have this shape:
-
-```ts
-async function embed(text) {
-  return [
-    /* numbers */
-  ]
-}
-```
-
-Returns `{ memoryPrompt, tools }`.
+Initializes the memory manager and builds the semantic index. Must be called once before anything else. Returns `{ memoryPrompt, tools }`.
 
 ### `await memory.afterTurn(messages)`
 

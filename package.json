@@ -26,5 +26,8 @@
   "devDependencies": {
     "@types/node": "^25.5.0",
     "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.0.0"
   }
 }

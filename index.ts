@@ -1,13 +1,13 @@
 import fs from "fs"
 import path from "path"
 import { createHash } from "crypto"
+import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transformers"
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 type EmbedFn = (text: string) => Promise<number[]>
-type BatchEmbedFn = (texts: string[]) => Promise<number[][]>
 
 export type Message = { role: string; content: string }
 
@@ -119,19 +119,22 @@ function dateStr(offsetDays = 0): string {
   return d.toISOString().slice(0, 10)
 }
 
-function assertEmbedding(embedding: unknown): number[] {
-  if (!Array.isArray(embedding)) {
-    throw new Error("embedding function must return a number[]")
-  }
-  return embedding as number[]
-}
 
-function resolveEmbed(embed: EmbedFn): BatchEmbedFn {
-  if (typeof embed !== "function") {
-    throw new TypeError("init() requires an embedFn: async (text) => number[]")
+// ---------------------------------------------------------------------------
+// Default embedder — lazy singleton, loaded on first use
+// ---------------------------------------------------------------------------
+
+let _pipeline: FeatureExtractionPipeline | null = null
+
+async function defaultEmbed(text: string): Promise<number[]> {
+  if (!_pipeline) {
+    _pipeline = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2")
   }
-  return async (texts) =>
-    Promise.all(texts.map(async (text) => assertEmbedding(await embed(text))))
+  const output = await (_pipeline as FeatureExtractionPipeline)(text, {
+    pooling: "mean",
+    normalize: true,
+  })
+  return Array.from(output.data as Float32Array)
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +145,7 @@ export class Memory {
   readonly #dir: string
   readonly #memoryFile: string
 
-  #embed: BatchEmbedFn | null = null
+  #embed: EmbedFn | null = null
   #index: IndexEntry[] = []
 
   #queue = new WriteQueue()
@@ -157,8 +160,8 @@ export class Memory {
   // Public API
   // -------------------------------------------------------------------------
 
-  async init(embedFn: EmbedFn): Promise<InitResult> {
-    this.#embed = resolveEmbed(embedFn)
+  async init(): Promise<InitResult> {
+    this.#embed = defaultEmbed
 
     await fs.promises.mkdir(this.#dir, { recursive: true })
     await this.reindex()
@@ -219,7 +222,7 @@ export class Memory {
         return
       }
 
-      const embeddings = await this.#embedder(unique.map((entry) => entry.text))
+      const embeddings = await Promise.all(unique.map((entry) => this.#embedder(entry.text)))
       this.#index = unique.map((entry, i) => ({
         ...entry,
         embedding: embeddings[i],
@@ -261,7 +264,7 @@ export class Memory {
   // Private: embedder guard
   // -------------------------------------------------------------------------
 
-  get #embedder(): BatchEmbedFn {
+  get #embedder(): EmbedFn {
     if (!this.#embed) {
       throw new Error("Memory not initialised — call init() first")
     }
@@ -415,7 +418,7 @@ export class Memory {
       const id = sha256(text)
       if (this.#index.some((entry) => entry.id === id)) return
 
-      const [embedding] = await this.#embedder([text])
+      const embedding = await this.#embedder(text)
       this.#index = [...this.#index, { id, text, date, source, embedding }]
     })
   }
@@ -532,7 +535,7 @@ export class Memory {
         function: async ({ query, k = 5 }: { query: string; k?: number }) => {
           if (this.#index.length === 0) return "No history indexed yet."
 
-          const [queryEmbedding] = await this.#embedder([query])
+          const queryEmbedding = await this.#embedder(query)
           const safeK = Math.min(Math.max(1, k), 20)
 
           const results = this.#index
