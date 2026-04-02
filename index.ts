@@ -186,8 +186,6 @@ export class Memory {
     await this.#queue.run(() =>
       fs.promises.appendFile(file, JSON.stringify(entry) + "\n", "utf-8"),
     )
-
-    await this.#indexText(this.#logEntryToText(entry), "log", dateStr())
   }
 
   async afterTurn(messages: Message[]): Promise<Message[]> {
