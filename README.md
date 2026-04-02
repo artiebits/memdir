@@ -48,7 +48,7 @@ let messages = [{ role: "system", content: systemPrompt }]
 `init()` returns two things:
 
 - `memoryPrompt` — memory instructions and stored facts. Append to your own system prompt.
-- `tools` — `memory_write` and `memory_search` tools. Pass these to your model.
+- `tools` — `memory_write`, `memory_search`, and `memory_delete` tools. Pass these to your model.
 
 Then after each turn do:
 
@@ -87,3 +87,11 @@ Call this after each completed turn. It appends the latest user/assistant pair t
 ### `await memory.reindex()`
 
 Rebuilds the in-memory index from `memory.md` and recent log files. Runs automatically on `init()`. Call it manually if you edit memory files outside the library.
+
+## Tools
+
+Three tools are returned by `init()` and passed to your model:
+
+- `memory_write` — saves a fact to `memory.md`. The model calls this when it learns something worth remembering.
+- `memory_search` — searches past conversations and saved facts by semantic similarity.
+- `memory_delete` — deletes a saved fact from `memory.md`.

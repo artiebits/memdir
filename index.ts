@@ -292,6 +292,26 @@ export class Memory {
     await this.#indexText(bullet, "memory")
   }
 
+  async #deleteMemory(content: string): Promise<string> {
+    const needle = content.trim().startsWith("-") ? content.trim() : `- ${content.trim()}`
+    const id = sha256(needle)
+    const exists = this.#index.some((e) => e.id === id && e.source === "memory")
+    if (!exists) return "No matching memory found. Use memory_search to find the exact text first."
+
+    await this.#queue.run(async () => {
+      const existing = await this.#readMemory()
+      const updated = existing
+        .split("\n")
+        .filter((line) => line.trim() !== needle)
+        .join("\n")
+        .trimEnd()
+      await atomicWrite(this.#memoryFile, updated ? updated + "\n" : "")
+    })
+
+    this.#index = this.#index.filter((e) => e.id !== id)
+    return `Deleted: ${needle}`
+  }
+
   // -------------------------------------------------------------------------
   // Private: log helpers
   // -------------------------------------------------------------------------
@@ -464,6 +484,26 @@ export class Memory {
         function: async ({ content }: { content: string }) => {
           await this.#writeMemory(content)
           return "Memory saved."
+        },
+      },
+      {
+        name: "memory_delete",
+        description:
+          "Delete a saved memory by its exact text. " +
+          "Always call memory_search first to find the exact text of the memory to delete, " +
+          "then pass that text here. Deletes only from long-term memory (memory.md), not from conversation logs.",
+        parameters: {
+          type: "object",
+          properties: {
+            content: {
+              type: "string",
+              description: "The exact text of the memory to delete, as returned by memory_search.",
+            },
+          },
+          required: ["content"],
+        },
+        function: async ({ content }: { content: string }) => {
+          return this.#deleteMemory(content)
         },
       },
       {
