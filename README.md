@@ -1,16 +1,18 @@
 # memdir
 
-Memory for your local agent.
+Context and memory management for agents that learn over time.
 
-- Works with any LLM
-- No data leaves your machine
-- Stores memory in human-readable, editable files
+## The problem
 
-**Who would use this?**
+Sessions end. Memory clears. Without a way to carry the past experience forward, an agent is just a task-oriented tool. It never becomes something that feels like the same person from one conversation to the next.
 
-- Those who want fast setup
-- Those who prioritize privacy
-- Those who want to open memory file and see exactly what the agent "knows"
+The goal is not just remembering things, but building a persistent self that sees its past and future versions as one identity. This enables long-term learning and relationships.
+
+A static SOUL.md injected into the system prompt gives you persistent identity too — the same text every run, even if you switch models.
+
+But it stays the same over months and years.
+
+This library attempts to give agents ability to build identity that persists and evolves across sessions, environments, and model swaps.
 
 ## Installation
 
@@ -20,58 +22,57 @@ npm i memdir
 
 ## Compatibility
 
-Works with any tool-calling LLM:
-
-- Local runtimes: Ollama, llama.cpp, LM Studio, and more
-- Cloud providers: OpenAI (GPT), Anthropic (Claude), Mistral, xAI (Grok)
-- Open models: Llama, Qwen, DeepSeek, Mixtral, Gemma, and more
-
-Memory stays local even when using a cloud API.
-
-Note: The model must support tool calling. Base models without instruction tuning won't know when or how to call the memory tools.
+It works with any LLM that supports tool calling — gpt-4o, Gemma, Qwen, DeepSeek, Kimi, Llama, and more. Tool calling is the mechanism by which the model can write and delete memories at the right moments.
 
 ## Usage
 
 ```ts
-import { Memory } from "memdir";
+import { MemoryManager } from "memdir"
 
-const memory = new Memory();
-const { memoryPrompt, tools: memoryTools } = await memory.init();
+const memory = new MemoryManager()
 
 const agent = new Agent({
-  instructions: `You are a helpful assistant.\n\n${memoryPrompt}`,
-  tools: [...yourTools, ...memoryTools],
-});
-```
+  instructions: memory.getMemoryPrompt(),
+  tools: [...yourTools, ...memory.getMemoryTools()],
+})
 
-After each turn:
+const session = memory.contextManager
 
-```ts
-messages = await memory.afterTurn(messages);
+await run(agent, userInput, { session })
 ```
 
 ## API
 
-### `new Memory({ dir? })`
+- `new MemoryManager(dir, sessionId?)` — creates a manager backed by a SQLite database in `dir`. Resumes the most recent session automatically on restart. Pass a `sessionId` to target a specific session.
+- `memory.contextManager` — the `ContextManager` instance. Pass it as `session` to `run()` so the SDK uses it for conversation history.
+- `memory.getMemoryPrompt(envContext?)` — returns the memory system prompt combined with the current contents of `memories.md`. Add it to your agent's instructions so the model knows when and how to use the memory tools.
+- `memory.getMemoryTools()` — returns two memory tools: `memory_write` and `memory_delete`. Pass them to your agent's tool list.
+- `memory.loadSession(sessionId)` — switch the manager to an existing session.
+- `memory.createNewSession()` — start a fresh session.
+- `memory.clearCurrentSession()` — clear the current session's conversation history.
 
-Creates a new Memory instance. Accepts an optional `dir` option (default: `'./memory'`) telling where all files should be stored.
+## How it works
 
-### `await memory.init()`
+Memory is organised in three tiers, from most to least stable:
 
-Initializes the memory manager and builds the semantic index. Must be called once before anything else. Returns `{ memoryPrompt, tools }`.
+```
+┌─────────────────────────────────────────────────────┐
+│ SYSTEM PROMPT — always in context                   │
+│   memories.md: curated facts, rules, references     │
+├─────────────────────────────────────────────────────┤
+│ RECENT MESSAGES — sliding window, last N turns      │
+│   stored in SQLite, replayed verbatim on restart    │
+├─────────────────────────────────────────────────────┤
+│ FULL HISTORY — always on disk                       │
+│   all turns in SQLite, never deleted                │
+└─────────────────────────────────────────────────────┘
+```
 
-### `await memory.afterTurn(messages)`
+- `memories.md` holds curated long-term facts. The model writes to it via `memory_write` when something is worth keeping across sessions — user preferences, decisions, references. memdir injects the contents into the system prompt on every turn so those facts stay present without requiring a search call. Each memory is numbered so the model can delete by ID via `memory_delete`.
+- The context window uses a sliding window. `ContextManager.getItems(maxItems)` returns the last N turns from SQLite. When the window is full, the oldest turns fall out of context but remain in the database — the full history is never deleted.
+- Session resumption happens automatically on restart. The most recent session is loaded and its last N turns are replayed into the context window.
+- Storage is a single SQLite file (`memory.db`) in the directory you provide. All sessions and their items live there.
 
-Call this after each completed turn. It appends the latest user/assistant pair to today's log, trims and refreshes the chat if it has grown past the character threshold, and returns the updated message array.
+## Upcoming Features
 
-### `await memory.reindex()`
-
-Rebuilds the in-memory index from `memory.md` and recent log files. Runs automatically on `init()`. Call it manually if you edit memory files outside the library.
-
-## Tools
-
-Three tools are returned by `init()` and passed to your model:
-
-- `memory_write` — saves a fact to `memory.md`. The model calls this when it learns something worth remembering.
-- `memory_search` — searches past conversations and saved facts by semantic similarity.
-- `memory_delete` — deletes a saved fact from `memory.md`.
+'Reflect' and 'Defragmentation' are upcoming features. Reflect allows the agent to review and refine its own internalized learnings, while Defragmentation optimizes context density by consolidating related memories.

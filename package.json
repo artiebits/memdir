@@ -1,7 +1,7 @@
 {
   "name": "memdir",
   "version": "0.0.3",
-  "description": "Lightweight memory manager for AI agents.",
+  "description": "Memory for AI agents. Private, transparent, and model-agnostic.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -24,10 +24,12 @@
     "llm"
   ],
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^25.5.0",
     "typescript": "^6.0.2"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.0.0"
+    "@openai/agents": "^0.8.2",
+    "better-sqlite3": "^11.10.0"
   }
 }
